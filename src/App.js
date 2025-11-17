@@ -3,7 +3,7 @@ import React, { useState, useRef } from 'react';
 function App() {
   const [wsUrl, setWsUrl] = useState('');
   const [protocol, setProtocol] = useState('ws');
-  const [keyValuePairs, setKeyValuePairs] = useState([{ key: '', value: '' }]);
+  const [keyValuePairs, setKeyValuePairs] = useState([{ key: '', value: '', enabled: true }]);
   const [isConnected, setIsConnected] = useState(false);
   const [messageLog, setMessageLog] = useState([]);
   const wsRef = useRef(null);
@@ -41,12 +41,31 @@ function App() {
 
   const handleSendMessage = () => {
     if (wsRef.current && isConnected) {
-      const jsonPayload = keyValuePairs.reduce((acc, { key, value }) => {
-        if (key) {
-          const isString = (/\D/.test(value))
-          console.log("isString", isString)
-          const numValue = parseFloat(value);
-          acc[key] = !isNaN(numValue) && value.trim() !== '' && !isString ? numValue : value;
+      const jsonPayload = keyValuePairs.reduce((acc, { key, value, enabled }) => {
+        if (key && enabled) {
+          const raw = value === undefined || value === null ? '' : String(value).trim();
+
+          if (raw === '') {
+            acc[key] = '';
+          } else if (/^\{.*\}$/.test(raw) || /^\[.*\]$/.test(raw)) {
+            // Se il valore sembra un oggetto o array JSON, prova a parsearlo
+            try {
+              acc[key] = JSON.parse(raw);
+            } catch (e) {
+              // Se il parse fallisce, mantieni come stringa
+              acc[key] = raw;
+            }
+          } else if (/^(true|false|null)$/i.test(raw)) {
+            // Gestisci booleani e null
+            const lower = raw.toLowerCase();
+            acc[key] = lower === 'null' ? null : lower === 'true';
+          } else if (!isNaN(raw) && raw !== '') {
+            // Se è un numero, convertilo
+            acc[key] = Number(raw);
+          } else {
+            // Altrimenti mantieni come stringa
+            acc[key] = raw;
+          }
         }
         return acc;
       }, {});
@@ -63,7 +82,7 @@ function App() {
   };
 
   const addKeyValuePair = () => {
-    setKeyValuePairs([...keyValuePairs, { key: '', value: '' }]);
+    setKeyValuePairs([...keyValuePairs, { key: '', value: '', enabled: true }]);
   };
 
   const removeKeyValuePair = (index) => {
@@ -108,20 +127,28 @@ function App() {
       <div style={{ marginBottom: '20px' }}>
         <h3 style={{ color: '#ffffff' }}>JSON Payload (Key-Value Pairs)</h3>
         {keyValuePairs.map((pair, index) => (
-          <div key={index} style={{ marginBottom: '10px' }}>
+          <div key={index} style={{ marginBottom: '10px', display: 'flex', alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={pair.enabled}
+              onChange={(e) => updateKeyValuePair(index, 'enabled', e.target.checked)}
+              style={{ marginRight: '10px', width: '20px', height: '20px', cursor: 'pointer' }}
+            />
             <input
               type="text"
               placeholder="Key"
               value={pair.key}
               onChange={(e) => updateKeyValuePair(index, 'key', e.target.value)}
-              style={{ marginRight: '10px', padding: '5px', width: '30%', backgroundColor: '#333', color: '#ffffff', border: '1px solid #555' }}
+              style={{ marginRight: '10px', padding: '5px', width: '30%', backgroundColor: '#333', color: '#ffffff', border: '1px solid #555', opacity: pair.enabled ? 1 : 0.5 }}
+              disabled={!pair.enabled}
             />
             <input
               type="text"
               placeholder="Value"
               value={pair.value}
               onChange={(e) => updateKeyValuePair(index, 'value', e.target.value)}
-              style={{ marginRight: '10px', padding: '5px', width: '30%', backgroundColor: '#333', color: '#ffffff', border: '1px solid #555' }}
+              style={{ marginRight: '10px', padding: '5px', width: '30%', backgroundColor: '#333', color: '#ffffff', border: '1px solid #555', opacity: pair.enabled ? 1 : 0.5 }}
+              disabled={!pair.enabled}
             />
             <button onClick={() => removeKeyValuePair(index)} style={{ padding: '5px', backgroundColor: 'red', color: 'white' }}>
               Remove
