@@ -3,15 +3,23 @@ import React, { useState, useRef } from 'react';
 function App() {
   const [wsUrl, setWsUrl] = useState('');
   const [protocol, setProtocol] = useState('ws');
+  const [messageFormat, setMessageFormat] = useState('json'); // 'json' o 'socketio'
+  const [socketioPrefix, setSocketioPrefix] = useState('42/RT,');
+  const [eventName, setEventName] = useState('GOL message');
   const [keyValuePairs, setKeyValuePairs] = useState([{ key: '', value: '', enabled: true }]);
   const [isConnected, setIsConnected] = useState(false);
   const [messageLog, setMessageLog] = useState([]);
+  const [enablePing, setEnablePing] = useState(false);
+  const [enableAutoInit, setEnableAutoInit] = useState(true);
+  const [initMessage, setInitMessage] = useState('40/RT,');
   const wsRef = useRef(null);
+  const hasInitializedRef = useRef(false);
 
   const handleStartConnection = () => {
     if (wsUrl) {
       const fullUrl = `${protocol}://${wsUrl}`;
       wsRef.current = new WebSocket(fullUrl);
+      hasInitializedRef.current = false; // Reset flag
 
       wsRef.current.onopen = () => {
         setIsConnected(true);
@@ -19,12 +27,30 @@ function App() {
       };
 
       wsRef.current.onmessage = (event) => {
-        logMessage(event.data, 'incoming');
+        const message = event.data;
+        logMessage(message, 'incoming');
+        
+        // Invia messaggio di inizializzazione quando riceve un messaggio che inizia con "0" (handshake Socket.IO)
+        if (enableAutoInit && !hasInitializedRef.current && message.startsWith('0')) {
+          hasInitializedRef.current = true;
+          wsRef.current.send(initMessage);
+          logMessage(initMessage, 'init');
+          return; // Non processare ulteriormente questo messaggio
+        }
+        
+        // Se è abilitato il ping e il messaggio è SOLO un numero (ping/pong), rispondi incrementando di 1
+        if (enablePing && /^\d+$/.test(message)) {
+          const pingNumber = parseInt(message, 10);
+          const pongNumber = String(pingNumber + 1);
+          wsRef.current.send(pongNumber);
+          logMessage(pongNumber, 'pong');
+        }
       };
 
       wsRef.current.onclose = () => {
         setIsConnected(false);
         logMessage('Disconnected from WebSocket server', 'system');
+        hasInitializedRef.current = false; // Reset flag
       };
 
       wsRef.current.onerror = (error) => {
@@ -41,38 +67,69 @@ function App() {
 
   const handleSendMessage = () => {
     if (wsRef.current && isConnected) {
-      const jsonPayload = keyValuePairs.reduce((acc, { key, value, enabled }) => {
-        if (key && enabled) {
-          const raw = value === undefined || value === null ? '' : String(value).trim();
+      let messageToSend;
 
-          if (raw === '') {
-            acc[key] = '';
-          } else if (/^\{.*\}$/.test(raw) || /^\[.*\]$/.test(raw)) {
-            // Se il valore sembra un oggetto o array JSON, prova a parsearlo
-            try {
-              acc[key] = JSON.parse(raw);
-            } catch (e) {
-              // Se il parse fallisce, mantieni come stringa
+      if (messageFormat === 'socketio') {
+      // Formato Socket.IO: 42/RT,["GOL message",{"action":"clientGioca","params":{...}}]
+        const jsonPayload = keyValuePairs.reduce((acc, { key, value, enabled }) => {
+          if (key && enabled) {
+            const raw = value === undefined || value === null ? '' : String(value).trim();
+
+            if (raw === '') {
+              acc[key] = '';
+            } else if (/^\{.*\}$/.test(raw) || /^\[.*\]$/.test(raw)) {
+              try {
+                acc[key] = JSON.parse(raw);
+              } catch (e) {
+                acc[key] = raw;
+              }
+            } else if (/^(true|false|null)$/i.test(raw)) {
+              const lower = raw.toLowerCase();
+              acc[key] = lower === 'null' ? null : lower === 'true';
+            } else if (!isNaN(raw) && raw !== '') {
+              acc[key] = Number(raw);
+            } else {
               acc[key] = raw;
             }
-          } else if (/^(true|false|null)$/i.test(raw)) {
-            // Gestisci booleani e null
-            const lower = raw.toLowerCase();
-            acc[key] = lower === 'null' ? null : lower === 'true';
-          } else if (!isNaN(raw) && raw !== '') {
-            // Se è un numero, convertilo
-            acc[key] = Number(raw);
-          } else {
-            // Altrimenti mantieni come stringa
-            acc[key] = raw;
           }
-        }
-        return acc;
-      }, {});
+          return acc;
+        }, {});
+
+        // Costruisce il messaggio Socket.IO
+        const socketioMessage = [eventName, jsonPayload];
+        messageToSend = socketioPrefix + JSON.stringify(socketioMessage);
+      } else {
+        // Formato JSON standard (comportamento originale)
+        const jsonPayload = keyValuePairs.reduce((acc, { key, value, enabled }) => {
+          if (key && enabled) {
+            const raw = value === undefined || value === null ? '' : String(value).trim();
+
+            if (raw === '') {
+              acc[key] = '';
+            } else if (/^\{.*\}$/.test(raw) || /^\[.*\]$/.test(raw)) {
+              try {
+                acc[key] = JSON.parse(raw);
+              } catch (e) {
+                acc[key] = raw;
+              }
+            } else if (/^(true|false|null)$/i.test(raw)) {
+              const lower = raw.toLowerCase();
+              acc[key] = lower === 'null' ? null : lower === 'true';
+            } else if (!isNaN(raw) && raw !== '') {
+              acc[key] = Number(raw);
+            } else {
+              acc[key] = raw;
+            }
+          }
+          return acc;
+        }, {});
+
+        messageToSend = JSON.stringify(jsonPayload);
+      }
 
       try {
-        wsRef.current.send(JSON.stringify(jsonPayload));
-        logMessage(JSON.stringify(jsonPayload), 'outgoing');
+        wsRef.current.send(messageToSend);
+        logMessage(messageToSend, 'outgoing');
       } catch (error) {
         alert('Failed to send message');
       }
@@ -121,6 +178,87 @@ function App() {
             <option value="ws">ws</option>
             <option value="wss">wss</option>
           </select>
+        </label>
+      </div>
+
+      <div style={{ marginBottom: '20px' }}>
+        <label>
+          Message Format:
+          <select
+            value={messageFormat}
+            onChange={(e) => setMessageFormat(e.target.value)}
+            style={{ marginLeft: '10px', padding: '5px', backgroundColor: '#333', color: '#ffffff', border: '1px solid #555' }}
+          >
+            <option value="json">JSON Standard</option>
+            <option value="socketio">Socket.IO Format</option>
+          </select>
+        </label>
+      </div>
+
+      {messageFormat === 'socketio' && (
+        <>
+          <div style={{ marginBottom: '20px' }}>
+            <label>
+              Socket.IO Prefix:
+              <input
+                type="text"
+                value={socketioPrefix}
+                onChange={(e) => setSocketioPrefix(e.target.value)}
+                placeholder="e.g., 42/RT,"
+                style={{ marginLeft: '10px', padding: '5px', width: '20%', backgroundColor: '#333', color: '#ffffff', border: '1px solid #555' }}
+              />
+            </label>
+          </div>
+          <div style={{ marginBottom: '20px' }}>
+            <label>
+              Event Name:
+              <input
+                type="text"
+                value={eventName}
+                onChange={(e) => setEventName(e.target.value)}
+                placeholder="e.g., GOL message"
+                style={{ marginLeft: '10px', padding: '5px', width: '30%', backgroundColor: '#333', color: '#ffffff', border: '1px solid #555' }}
+              />
+            </label>
+          </div>
+        </>
+      )}
+
+      <div style={{ marginBottom: '20px' }}>
+        <label style={{ display: 'flex', alignItems: 'center' }}>
+          <input
+            type="checkbox"
+            checked={enableAutoInit}
+            onChange={(e) => setEnableAutoInit(e.target.checked)}
+            style={{ marginRight: '10px', width: '20px', height: '20px', cursor: 'pointer' }}
+          />
+          Enable Auto Init (invia automaticamente messaggio dopo connessione)
+        </label>
+        {enableAutoInit && (
+          <div style={{ marginTop: '10px', marginLeft: '30px' }}>
+            <label>
+              Init Message:
+              <input
+                type="text"
+                value={initMessage}
+                onChange={(e) => setInitMessage(e.target.value)}
+                placeholder="e.g., 40/RT,"
+                style={{ marginLeft: '10px', padding: '5px', width: '200px', backgroundColor: '#333', color: '#ffffff', border: '1px solid #555' }}
+              />
+            </label>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: '20px' }}>
+        <label style={{ display: 'flex', alignItems: 'center' }}>
+          <input
+            type="checkbox"
+            checked={enablePing}
+            onChange={(e) => setEnablePing(e.target.checked)}
+            style={{ marginRight: '10px', width: '20px', height: '20px', cursor: 'pointer' }}
+          />
+          Enable Auto Pong Response (risponde automaticamente ai ping numerici del server)
         </label>
       </div>
 
@@ -195,11 +333,11 @@ function App() {
             <div key={index} style={{ marginBottom: '10px' }}>
               <span
                 style={{
-                  color: log.type === 'incoming' ? 'lightgreen' : log.type === 'outgoing' ? 'lightblue' : log.type === 'error' ? 'red' : '#ffffff',
+                  color: log.type === 'incoming' ? 'lightgreen' : log.type === 'outgoing' ? 'lightblue' : log.type === 'pong' ? 'yellow' : log.type === 'init' ? 'orange' : log.type === 'error' ? 'red' : '#ffffff',
                   fontWeight: log.type === 'system' ? 'bold' : 'normal',
                 }}
               >
-                {log.type === 'incoming' ? '⬇️' : log.type === 'outgoing' ? '⬆️' : 'ℹ️'} [{log.time}] {log.type === 'incoming' ? 'Server' : 'Client'}: {log.message}
+                {log.type === 'incoming' ? '⬇️' : log.type === 'outgoing' ? '⬆️' : log.type === 'pong' ? '🏓' : log.type === 'init' ? '🚀' : 'ℹ️'} [{log.time}] {log.type === 'incoming' ? 'Server' : log.type === 'pong' ? 'Pong' : log.type === 'init' ? 'Init' : 'Client'}: {log.message}
               </span>
             </div>
           ))}
